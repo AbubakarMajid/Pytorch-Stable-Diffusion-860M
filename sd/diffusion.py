@@ -4,55 +4,24 @@ from torch.nn import functional as F
 from attention import SelfAttention, CrossAttention
 
 class TimeEmbedding(nn.Module):
-
-    def __init__(self, n_embed):
+    def __init__(self, n_embd):
         super().__init__()
-        self.linear_1 = nn.Linear(n_embed , 4 * n_embed)
-        self.linear_2 = nn.Linear(4 * n_embed , 4 * n_embed)
+        self.linear_1 = nn.Linear(n_embd, 4 * n_embd)
+        self.linear_2 = nn.Linear(4 * n_embd, 4 * n_embd)
 
-    def forward(self, x : torch.Tensor) ->torch.Tensor:
+    def forward(self, x):
+        # x: (1, 320)
+
+        # (1, 320) -> (1, 1280)
         x = self.linear_1(x)
-        x = F.silu(x)
-        x  = self.linear_2(x)
+        
+        # (1, 1280) -> (1, 1280)
+        x = F.silu(x) 
+        
+        # (1, 1280) -> (1, 1280)
+        x = self.linear_2(x)
 
         return x
-
-class Upsample(nn.Module):
-
-    def __init__(self, channels : int):
-        super().__init__()
-        self.conv_feature = nn.Conv2d(channels , channels , kernel_size = 3 , padding = 1)
-
-    def forward(self, x : torch.Tensor):
-        # (batch , channel , H , W) -> (Batch , Channel , H * 2 , W * 2)
-        x = F.interpolate(x , scale_factor=2 , mode = "nearest")
-        return self.conv(x)
-
-
-class SwitchSequential(nn.Sequential):
-
-    def forward(self , x: torch.Tensor, context: torch.Tensor, time : torch.Tensor):
-        for layer in self:
-            if isinstance(layer, UNET_AttentionBlock):
-                x = layer(x , context)
-            elif isinstance(layer , UNET_ResidualBlock):
-                x = layer(x , time)
-            else:
-                x = layer(x)
-
-
-class UNET_OutputLayer(nn.Module):
-    def __init__(self, in_c , out_c):
-        super().__init__()
-        self.groupnorm = nn.GroupNorm(32 , in_c)
-        self.conv_feature = nn.Conv2d(in_c , out_c , kernel_size= 3 , padding= 1)
-
-    def forward(self , x: torch.Tensor) -> torch.Tensor:
-        x = self.groupnorm(x)
-        x = F.silu(x)
-        x = self.conv(x)
-        return x
-    
 
 class UNET_ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, n_time=1280):
@@ -203,9 +172,26 @@ class UNET_AttentionBlock(nn.Module):
         # (Batch_Size, Features, Height, Width) + (Batch_Size, Features, Height, Width) -> (Batch_Size, Features, Height, Width)
         return self.conv_output(x) + residue_long
 
+class Upsample(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+    
+    def forward(self, x):
+        # (Batch_Size, Features, Height, Width) -> (Batch_Size, Features, Height * 2, Width * 2)
+        x = F.interpolate(x, scale_factor=2, mode='nearest') 
+        return self.conv(x)
 
-
-
+class SwitchSequential(nn.Sequential):
+    def forward(self, x, context, time):
+        for layer in self:
+            if isinstance(layer, UNET_AttentionBlock):
+                x = layer(x, context)
+            elif isinstance(layer, UNET_ResidualBlock):
+                x = layer(x, time)
+            else:
+                x = layer(x)
+        return x
 
 class UNET(nn.Module):
     def __init__(self):
@@ -317,26 +303,47 @@ class UNET(nn.Module):
         return x
 
 
+class UNET_OutputLayer(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.groupnorm = nn.GroupNorm(32, in_channels)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+    
+    def forward(self, x):
+        # x: (Batch_Size, 320, Height / 8, Width / 8)
 
+        # (Batch_Size, 320, Height / 8, Width / 8) -> (Batch_Size, 320, Height / 8, Width / 8)
+        x = self.groupnorm(x)
+        
+        # (Batch_Size, 320, Height / 8, Width / 8) -> (Batch_Size, 320, Height / 8, Width / 8)
+        x = F.silu(x)
+        
+        # (Batch_Size, 320, Height / 8, Width / 8) -> (Batch_Size, 4, Height / 8, Width / 8)
+        x = self.conv(x)
+        
+        # (Batch_Size, 4, Height / 8, Width / 8) 
+        return x
 
 class Diffusion(nn.Module):
-
     def __init__(self):
         super().__init__()
-        self.time_embedding = TimeEmbedding(320) # will convert (1,320) -> (1 , 1280)
+        self.time_embedding = TimeEmbedding(320)
         self.unet = UNET()
         self.final = UNET_OutputLayer(320, 4)
+    
+    def forward(self, latent, context, time):
+        # latent: (Batch_Size, 4, Height / 8, Width / 8)
+        # context: (Batch_Size, Seq_Len, Dim)
+        # time: (1, 320)
 
-    def forward(self , latent: torch.Tensor , context: torch.Tensor, time : torch.Tensor):
-
+        # (1, 320) -> (1, 1280)
         time = self.time_embedding(time)
-
-        #(batch , 4 , H / 8 , W / 8) -> (batch , 320 , H / 8 , W / 8)
-        output = self.unet(latent, context, time)
-
-        #(batch , 320 , H / 8 , W / 8) -> (batch , 4 , H / 8 , W / 8) final layer to return to original dimensions
-        output = self.final(output)
-
-        return output
-
         
+        # (Batch, 4, Height / 8, Width / 8) -> (Batch, 320, Height / 8, Width / 8)
+        output = self.unet(latent, context, time)
+        
+        # (Batch, 320, Height / 8, Width / 8) -> (Batch, 4, Height / 8, Width / 8)
+        output = self.final(output)
+        
+        # (Batch, 4, Height / 8, Width / 8)
+        return output

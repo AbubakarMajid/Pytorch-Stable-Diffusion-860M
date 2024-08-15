@@ -12,15 +12,15 @@ LATENTS_HEIGHT = HEIGHT // 8
 
 def generate(prompt: str , unc_prompt: str, input_image = None , strength = 0.8, do_cfg = True ,
         cfg_scale = 7.5 , sampler_name = "ddpm", n_inference_steps = 50 , models = {}, seed = None,
-        device = None, idle_devide = None , tokenizer = None
+        device = None, idle_device = None , tokenizer = None
         ):
     with torch.no_grad():
 
         if not (0 < strength <= 1):
             raise ValueError("Strength must be between 0 and 1")
         
-        if idle_devide:
-            to_idle : lambda x : x.to(idle_devide)
+        if idle_device:
+            to_idle = lambda x : x.to(idle_device)
         else :
             to_idle = lambda x : x
 
@@ -34,17 +34,24 @@ def generate(prompt: str , unc_prompt: str, input_image = None , strength = 0.8,
         clip.to(device)
 
         if do_cfg:
-
-            cond_tokens = tokenizer.batch_encode_plus([prompt],padding = "max_length", max_langth = 77).input_ids
-            cond_tokens = torch.tensor(cond_tokens, dtype = torch.long , device = device)
+            # Convert into a list of length Seq_Len=77
+            cond_tokens = tokenizer.batch_encode_plus(
+                [prompt], padding="max_length", max_length=77
+            ).input_ids
+            # (Batch_Size, Seq_Len)
+            cond_tokens = torch.tensor(cond_tokens, dtype=torch.long, device=device)
+            # (Batch_Size, Seq_Len) -> (Batch_Size, Seq_Len, Dim)
             cond_context = clip(cond_tokens)
-
-            uncond_tokens = tokenizer.tokenize([unc_prompt], padding = "max_length", max_langth = 77).input_ids
-            uncond_tokens = torch.tensor(uncond_tokens, dtype = torch.long , device = device)
+            # Convert into a list of length Seq_Len=77
+            uncond_tokens = tokenizer.batch_encode_plus(
+                [unc_prompt], padding="max_length", max_length=77
+            ).input_ids
+            # (Batch_Size, Seq_Len)
+            uncond_tokens = torch.tensor(uncond_tokens, dtype=torch.long, device=device)
+            # (Batch_Size, Seq_Len) -> (Batch_Size, Seq_Len, Dim)
             uncond_context = clip(uncond_tokens)
-
-            context = torch.cat([cond_context, uncond_context]) # (2 , seq_len , Dim) = (2 , 77 , 768)
-
+            # (Batch_Size, Seq_Len, Dim) + (Batch_Size, Seq_Len, Dim) -> (2 * Batch_Size, Seq_Len, Dim)
+            context = torch.cat([cond_context, uncond_context])
         else:
             # Convert into a list of length Seq_Len=77
             tokens = tokenizer.batch_encode_plus(
@@ -55,6 +62,7 @@ def generate(prompt: str , unc_prompt: str, input_image = None , strength = 0.8,
             # (Batch_Size, Seq_Len) -> (Batch_Size, Seq_Len, Dim)
             context = clip(tokens)
         to_idle(clip)
+
 
         if sampler_name == "ddpm":
             sampler = DDPMSampler(generator)
